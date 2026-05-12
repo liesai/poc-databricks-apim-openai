@@ -1,0 +1,23 @@
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+publisher_email = "platform@example.com"
+
+# Ajuster selon la disponibilité des services dans votre abonnement.
+location        = "francecentral"
+openai_location = "swedencentral"
+
+name_prefix                     = "dbxapimpoc"
+openai_custom_subdomain_prefix  = "dbxapimpocaoai"
+openai_model_deployment_name    = "gpt-4o-mini"
+openai_model_name               = "gpt-4o-mini"
+openai_model_version            = ""
+openai_api_version              = "2024-10-21"
+create_model_deployment         = false
+apim_sku_name                   = "Consumption_0"
+enable_databricks_public_network_access = true
+
+tags = {
+  workload = "poc-databricks-apim-openai"
+  owner    = "platform-engineering"
+  env      = "poc"
+}

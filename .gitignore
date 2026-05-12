@@ -1,0 +1,24 @@
+# Terraform local/runtime files
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+tfdestroy
+crash.log
+crash.*.log
+
+# Terraform variable files can contain subscription IDs, tenant IDs, emails or secrets.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Local/editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and generated output
+*.log

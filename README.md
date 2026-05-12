@@ -52,10 +52,10 @@ sequenceDiagram
 - APIM gateway : `https://dbxapimpoc60ld4eapim.azure-api.net`
 - APIM endpoint : `https://dbxapimpoc60ld4eapim.azure-api.net/openai/chat/completions`
 - Audience JWT acceptée par APIM : `https://cognitiveservices.azure.com`
-- Issuer JWT accepté par APIM : `https://sts.windows.net/495929eb-f078-464d-b6ef-e9fe18c31e12/`
+- Issuer JWT accepté par APIM : `https://sts.windows.net/${tenant_id}/`
 - Claim d'autorisation APIM : `oid == 2b9a19f6-ce47-42b4-8826-4568dc15b89a`
 - Databricks Job : `poc-apim-openai-managed-identity-test`
-- Notebook importé : `/Users/marc.milbled@gmail.com/test_apim_managed_identity`
+- Notebook importé : `/Users/${databricks_user}/test_apim_managed_identity`
 
 ## Détail de l'implémentation
 

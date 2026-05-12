@@ -105,6 +105,118 @@ La POC valide donc correctement l'usage de la managed identity depuis Databricks
 - [scripts/deploy-openai-model.sh](/home/marc/poc-databricks-apim-openai/scripts/deploy-openai-model.sh)
 - [scripts/deploy-databricks-mi-pipeline.sh](/home/marc/poc-databricks-apim-openai/scripts/deploy-databricks-mi-pipeline.sh)
 
+## How to démarrer la POC
+
+Prérequis locaux :
+
+- Azure CLI installé et authentifié avec `az login`.
+- Terraform `>= 1.6`.
+- `jq`, `curl` et `base64`.
+- Droits Azure pour créer les ressources du projet : Resource Group, Databricks workspace, Databricks Access Connector, APIM, Azure OpenAI, role assignment.
+- Droits Microsoft Entra pour créer une application/service principal, ou adaptation du code si cette partie est gérée par une équipe IAM.
+- Droits Databricks workspace admin ou droits suffisants pour créer une Unity Catalog service credential `SERVICE`.
+
+1. Cloner le dépôt.
+
+```bash
+git clone https://github.com/liesai/poc-databricks-apim-openai.git
+cd poc-databricks-apim-openai
+```
+
+2. Vérifier le contexte Azure.
+
+```bash
+az account show -o table
+```
+
+Si le mauvais abonnement est actif :
+
+```bash
+az account set --subscription "<subscription_id>"
+```
+
+3. Créer le fichier de variables Terraform.
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Renseigner au minimum :
+
+```hcl
+subscription_id = "<subscription_id>"
+tenant_id       = "<tenant_id>"
+publisher_email = "<email>"
+```
+
+Optionnellement ajuster `location`, `openai_location`, `name_prefix` et les tags.
+
+4. Déployer l'infrastructure.
+
+```bash
+terraform init
+terraform validate
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+
+5. Déployer ou vérifier le modèle Azure OpenAI.
+
+```bash
+cd ..
+./scripts/deploy-openai-model.sh
+```
+
+Par défaut, le script crée un deployment nommé `gpt-4o-mini` avec le modèle `gpt-4.1-mini` version `2025-04-14`. Ce choix garde le nom logique attendu par la policy APIM tout en évitant la version dépréciée de `gpt-4o-mini`.
+
+Pour changer le modèle :
+
+```bash
+MODEL_DEPLOYMENT_NAME="my-deployment" MODEL_NAME="gpt-4.1-mini" ./scripts/deploy-openai-model.sh
+```
+
+Si `MODEL_DEPLOYMENT_NAME` change, adapter aussi `openai_model_deployment_name` dans `terraform.tfvars` puis réappliquer Terraform.
+
+6. Déployer et lancer le pipeline Databricks.
+
+```bash
+./scripts/deploy-databricks-mi-pipeline.sh
+```
+
+Le script crée ou met à jour :
+
+- la service credential Unity Catalog `apim_openai_mi`
+- le notebook `/Users/${databricks_user}/test_apim_managed_identity`
+- le Job Databricks `poc-apim-openai-managed-identity-test`
+
+Il lance ensuite le Job et attend le résultat.
+
+7. Valider le résultat attendu.
+
+La sortie attendue ressemble à ceci :
+
+```json
+{
+  "status": 200,
+  "service_credential": "apim_openai_mi",
+  "apim_audience": "https://cognitiveservices.azure.com",
+  "token_aud": "https://cognitiveservices.azure.com",
+  "model_response": "mi-ok"
+}
+```
+
+Les deux points clés à vérifier sont `status=200` et `model_response=mi-ok`. Le champ `token_oid` doit correspondre au principal ID de l'Access Connector exposé par `terraform output databricks_access_connector_principal_id`.
+
+8. Nettoyer la POC.
+
+```bash
+cd terraform
+terraform destroy
+```
+
+Si Azure renvoie une erreur transitoire sur APIM, par exemple `412 PreconditionFailed`, relancer simplement `terraform destroy`.
+
 ## Déploiement infra
 
 ```bash

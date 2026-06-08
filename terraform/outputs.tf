@@ -54,13 +54,33 @@ output "apim_jwt_audience" {
 }
 
 output "apim_sp_jwt_audience" {
-  description = "Audience attendue par APIM dans le jeton bearer du service principal Model Serving."
-  value       = local.apim_sp_jwt_audience
+  description = "Audience réellement attendue par APIM dans le jeton bearer du service principal Model Serving."
+  value       = azuread_application.apim_api.client_id
+}
+
+output "apim_sp_token_resource" {
+  description = "Resource URI utilisée comme base du scope OAuth client credentials du service principal Model Serving."
+  value       = local.apim_sp_token_resource
 }
 
 output "serving_client_application_id" {
   description = "Client ID de l'application Entra utilisée par le test Databricks Model Serving avec service principal."
   value       = azuread_application.serving_client.client_id
+}
+
+output "login_proxy_private_link_service_id" {
+  description = "Resource ID du Private Link Service exposant le HAProxy login.microsoftonline.com."
+  value       = azurerm_private_link_service.login_proxy.id
+}
+
+output "login_proxy_nat_public_ip" {
+  description = "IP publique utilisée par la NAT Gateway du HAProxy pour sortir vers login.microsoftonline.com."
+  value       = azurerm_public_ip.login_proxy_nat.ip_address
+}
+
+output "login_proxy_vm_name" {
+  description = "Nom de la VM HAProxy utilisée pour le test login.microsoftonline.com."
+  value       = azurerm_linux_virtual_machine.login_proxy.name
 }
 
 output "azure_openai_account_name" {

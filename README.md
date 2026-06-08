@@ -343,6 +343,8 @@ Les alternatives qui utilisent une clé API, un bearer token statique, un servic
 
 Pour un workload Databricks Model Serving, la managed identity via Unity Catalog service credential n'est pas disponible dans le runtime testé. Une alternative plus réaliste que les API keys consiste à utiliser OAuth client credentials avec un service principal Entra dédié au serving endpoint.
 
+Le test complet de redirection `login.microsoftonline.com` depuis Model Serving via Databricks NCC, Private Link Service, Internal Load Balancer et HAProxy est détaillé dans [docs/databricks-serving-login-proxy-ncc.md](docs/databricks-serving-login-proxy-ncc.md).
+
 Flux cible :
 
 ```text
@@ -405,6 +407,57 @@ Résultat attendu :
 ```
 
 Ce test prouve un flux sans API key Azure OpenAI depuis Databricks Model Serving. Il ne prouve pas un flux managed identity pur depuis Model Serving.
+
+### Redirection de `login.microsoftonline.com` via Private Link Service
+
+Pour tester l'origine réseau du flux OAuth client credentials, la POC peut être complétée avec le schéma suivant :
+
+```text
+Databricks Model Serving
+  -> DNS/NCC domain rule pour login.microsoftonline.com
+  -> Databricks-managed private endpoint
+  -> Azure Private Link Service
+  -> Internal Load Balancer
+  -> HAProxy TCP passthrough
+  -> NAT / egress IP corporate
+  -> login.microsoftonline.com
+```
+
+Le script [scripts/configure-databricks-login-proxy-ncc.sh](scripts/configure-databricks-login-proxy-ncc.sh) configure la partie Databricks NCC :
+
+- crée ou réutilise une Network Connectivity Configuration
+- crée ou réutilise une private endpoint rule vers le Private Link Service du proxy HAProxy
+- associe le domain name `login.microsoftonline.com` à cette règle
+- attache la NCC au workspace Databricks de la POC
+
+Prérequis :
+
+- le Private Link Service HAProxy existe déjà
+- le HAProxy fait du TCP passthrough TLS, sans terminaison TLS
+- le backend HAProxy sort vers `login.microsoftonline.com:443`
+- l'egress du HAProxy est natté avec les IP corporate attendues par Conditional Access
+- l'utilisateur Azure/Databricks courant peut administrer les NCC au niveau account Databricks
+
+Exécution :
+
+```bash
+export DATABRICKS_ACCOUNT_ID="<account_id_databricks>"
+export LOGIN_PROXY_PRIVATE_LINK_SERVICE_ID="/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/privateLinkServices/<pls>"
+
+./scripts/configure-databricks-login-proxy-ncc.sh
+```
+
+Après création de la règle, approuver la private endpoint connection côté Private Link Service, puis attendre l'état `ESTABLISHED` dans la NCC Databricks. Ensuite relancer le test service principal :
+
+```bash
+./scripts/deploy-databricks-serving-sp-test.sh
+```
+
+Critères de succès attendus :
+
+- la réponse Model Serving contient `model_response = sp-ok`
+- les logs HAProxy montrent un flux TLS vers `login.microsoftonline.com:443`
+- les sign-in logs Entra du service principal montrent l'IP source corporate/NAT attendue
 
 ## Point technique important
 

@@ -138,7 +138,7 @@ require terraform
 RESOURCE_GROUP_NAME="$(tf_output resource_group_name)"
 TENANT_ID="$(tf_output apim_protected_api_identifier_uri | cut -d/ -f3)"
 APIM_URL="$(tf_output apim_openai_sp_chat_completions_url)"
-APIM_AUDIENCE="$(tf_output apim_sp_jwt_audience)"
+APIM_AUDIENCE="$(tf_output apim_sp_token_resource)"
 SERVING_CLIENT_ID="$(tf_output serving_client_application_id)"
 WORKSPACE_NAME="$(tf_output databricks_workspace_name)"
 WORKSPACE_URL="$(tf_output databricks_workspace_url)"
@@ -151,6 +151,7 @@ else
   CLIENT_SECRET="$(az ad app credential reset \
     --id "${SERVING_CLIENT_ID}" \
     --display-name "databricks-serving-sp-poc" \
+    --append \
     --years 1 \
     --query password \
     -o tsv)"
@@ -451,6 +452,34 @@ SERVED_ENTITY_NAME="apim_sp_probe_v${MODEL_VERSION}"
 echo "Registered model ${QUALIFIED_MODEL_NAME} version ${MODEL_VERSION}."
 echo "Creating or updating serving endpoint '${ENDPOINT_NAME}'..."
 
+if EXISTING_ENDPOINT="$(dbx_api_json_allow_404 GET "/api/2.0/serving-endpoints/${ENDPOINT_NAME}")"; then
+  echo "Waiting for existing serving endpoint update to finish before changing config..."
+  START_TIME="$(date +%s)"
+  while true; do
+    UPDATE_STATE="$(jq -r '.state.config_update // empty' <<<"${EXISTING_ENDPOINT}")"
+    READY_STATE="$(jq -r '.state.ready // empty' <<<"${EXISTING_ENDPOINT}")"
+    echo "Endpoint pre-update state: ready=${READY_STATE:-unknown} update=${UPDATE_STATE:-unknown}"
+
+    if [[ "${UPDATE_STATE}" == "NOT_UPDATING" ]]; then
+      break
+    fi
+
+    if [[ "${UPDATE_STATE}" == "UPDATE_FAILED" ]]; then
+      echo "${EXISTING_ENDPOINT}" | jq .
+      exit 1
+    fi
+
+    if (( "$(date +%s)" - START_TIME > TIMEOUT_SECONDS )); then
+      echo "Timed out waiting for previous serving endpoint update on ${ENDPOINT_NAME}." >&2
+      echo "${EXISTING_ENDPOINT}" | jq .
+      exit 1
+    fi
+
+    sleep "${POLL_SECONDS}"
+    EXISTING_ENDPOINT="$(dbx_api_json GET "/api/2.0/serving-endpoints/${ENDPOINT_NAME}")"
+  done
+fi
+
 ENDPOINT_CONFIG="$(jq -n \
   --arg endpoint_name "${ENDPOINT_NAME}" \
   --arg served_entity_name "${SERVED_ENTITY_NAME}" \
@@ -506,7 +535,7 @@ while true; do
   CONFIG_VERSION="$(jq -r '.config.config_version // .pending_config.config_version // empty' <<<"${ENDPOINT}")"
   echo "Endpoint state: ready=${READY_STATE:-unknown} update=${UPDATE_STATE:-unknown} config_version=${CONFIG_VERSION:-unknown}"
 
-  if [[ "${READY_STATE}" == "READY" && "${UPDATE_STATE}" != "UPDATE_FAILED" ]]; then
+  if [[ "${READY_STATE}" == "READY" && "${UPDATE_STATE}" == "NOT_UPDATING" ]]; then
     break
   fi
 

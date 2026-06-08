@@ -33,6 +33,11 @@ output "apim_openai_chat_completions_url" {
   value       = "${azurerm_api_management.this.gateway_url}/${local.apim_api_path}/chat/completions"
 }
 
+output "apim_openai_sp_chat_completions_url" {
+  description = "URL cible pour le test d'appel APIM vers Azure OpenAI avec service principal."
+  value       = "${azurerm_api_management.this.gateway_url}/${local.apim_api_path}/sp/chat/completions"
+}
+
 output "apim_protected_api_application_id" {
   description = "Client ID de l'application Entra protégée par APIM. Sert d'audience logique pour le token."
   value       = azuread_application.apim_api.client_id
@@ -46,6 +51,16 @@ output "apim_protected_api_identifier_uri" {
 output "apim_jwt_audience" {
   description = "Audience attendue par APIM dans le jeton bearer de la managed identity Databricks."
   value       = local.apim_jwt_audience
+}
+
+output "apim_sp_jwt_audience" {
+  description = "Audience attendue par APIM dans le jeton bearer du service principal Model Serving."
+  value       = local.apim_sp_jwt_audience
+}
+
+output "serving_client_application_id" {
+  description = "Client ID de l'application Entra utilisée par le test Databricks Model Serving avec service principal."
+  value       = azuread_application.serving_client.client_id
 }
 
 output "azure_openai_account_name" {

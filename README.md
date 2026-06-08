@@ -339,6 +339,73 @@ n'est pas validé avec le runtime Model Serving testé. Le blocage se situe dans
 
 Les alternatives qui utilisent une clé API, un bearer token statique, un service principal avec secret client, ou un secret Databricks ne répondent pas à l'objectif de cette POC, qui est de valider un flux sans secret applicatif.
 
+## Alternative Model Serving avec service principal
+
+Pour un workload Databricks Model Serving, la managed identity via Unity Catalog service credential n'est pas disponible dans le runtime testé. Une alternative plus réaliste que les API keys consiste à utiliser OAuth client credentials avec un service principal Entra dédié au serving endpoint.
+
+Flux cible :
+
+```text
+Client
+  -> Databricks Model Serving endpoint
+    -> code Python du modèle MLflow pyfunc
+      -> client credentials Entra
+      -> token aud=api://... role=APIM.Proxy.Invoke
+      -> APIM /openai/sp/chat/completions
+      -> Azure OpenAI via managed identity APIM
+```
+
+Cette variante ne supprime pas tout secret côté Model Serving : le `client_secret` du service principal doit être stocké dans un Databricks secret scope et injecté dans le serving endpoint avec la syntaxe `{{secrets/scope/key}}`. Elle supprime en revanche l'usage d'API key Azure OpenAI côté client Databricks, centralise l'autorisation sur Entra/APIM, et garde l'accès Azure OpenAI sans clé grâce à la managed identity d'APIM.
+
+Terraform ajoute :
+
+- une application Entra `serving-client`
+- un service principal associé
+- une app role assignment `APIM.Proxy.Invoke` vers l'application protégée APIM
+- une opération APIM séparée `POST /openai/sp/chat/completions`
+- une policy APIM dédiée validant le JWT Entra du service principal
+
+Le script [scripts/deploy-databricks-serving-sp-test.sh](scripts/deploy-databricks-serving-sp-test.sh) automatise le test :
+
+- crée ou réutilise un secret applicatif pour le service principal `serving-client`
+- stocke ce secret dans un Databricks secret scope
+- enregistre un modèle MLflow `pyfunc`
+- déploie un Databricks Model Serving endpoint
+- obtient un token Entra depuis `predict()` avec le flow `client_credentials`
+- appelle APIM avec ce bearer token
+- vérifie que la réponse Azure OpenAI revient via APIM
+
+Exécution :
+
+```bash
+cd /home/marc/poc-databricks-apim-openai
+./scripts/deploy-databricks-serving-sp-test.sh
+```
+
+Par défaut, le script crée un nouveau secret applicatif Entra d'une durée d'un an avec `az ad app credential reset`, puis le pousse dans Databricks secrets. Pour fournir un secret déjà géré par l'équipe IAM :
+
+```bash
+SERVING_CLIENT_SECRET="<client_secret>" ./scripts/deploy-databricks-serving-sp-test.sh
+```
+
+Résultat attendu :
+
+```json
+{
+  "predictions": [
+    {
+      "status": 200,
+      "auth_flow": "service_principal_client_credentials",
+      "apim_audience": "api://...",
+      "token_roles": ["APIM.Proxy.Invoke"],
+      "model_response": "sp-ok"
+    }
+  ]
+}
+```
+
+Ce test prouve un flux sans API key Azure OpenAI depuis Databricks Model Serving. Il ne prouve pas un flux managed identity pur depuis Model Serving.
+
 ## Point technique important
 
 La première variante utilisait une audience applicative `api://...` avec un app role `APIM.Proxy.Invoke`. Le provider Databricks `dbutils.credentials.getServiceCredentialsProvider(...)` n'accepte pas cette audience comme URI de ressource pour l'émission du token. La policy APIM a donc été adaptée pour valider une audience Azure valide, `https://cognitiveservices.azure.com`, puis restreindre l'accès par claim `oid`.

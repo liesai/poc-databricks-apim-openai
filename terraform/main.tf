@@ -26,8 +26,10 @@ locals {
   apim_api_identifier_uri   = "api://${var.tenant_id}/${local.base_name}-apim-api"
   jwt_openid_config_url     = "https://login.microsoftonline.com/${var.tenant_id}/v2.0/.well-known/openid-configuration"
   jwt_v1_issuer             = "https://sts.windows.net/${var.tenant_id}/"
+  jwt_v2_issuer             = "https://login.microsoftonline.com/${var.tenant_id}/v2.0"
   openai_resource_audience  = "https://cognitiveservices.azure.com"
   apim_jwt_audience         = local.openai_resource_audience
+  apim_sp_jwt_audience      = local.apim_api_identifier_uri
   openai_backend_base_url   = "https://${local.openai_custom_subdomain}.openai.azure.com"
   effective_tags            = merge(var.tags, { scenario = "databricks-serverless-apim-openai-mi" })
 }
@@ -108,6 +110,10 @@ resource "azuread_application" "apim_api" {
   identifier_uris  = [local.apim_api_identifier_uri]
   owners           = [data.azurerm_client_config.current.object_id]
 
+  api {
+    requested_access_token_version = 2
+  }
+
   app_role {
     allowed_member_types = ["Application"]
     description          = "Call the APIM protected OpenAI proxy."
@@ -124,9 +130,26 @@ resource "azuread_service_principal" "apim_api" {
   owners                       = [data.azurerm_client_config.current.object_id]
 }
 
+resource "azuread_application" "serving_client" {
+  display_name     = "${local.base_name}-serving-client"
+  sign_in_audience = "AzureADMyOrg"
+  owners           = [data.azurerm_client_config.current.object_id]
+}
+
+resource "azuread_service_principal" "serving_client" {
+  client_id = azuread_application.serving_client.client_id
+  owners    = [data.azurerm_client_config.current.object_id]
+}
+
 resource "azuread_app_role_assignment" "databricks_access_connector_to_apim_api" {
   app_role_id         = random_uuid.apim_app_role.result
   principal_object_id = azurerm_databricks_access_connector.this.identity[0].principal_id
+  resource_object_id  = azuread_service_principal.apim_api.object_id
+}
+
+resource "azuread_app_role_assignment" "serving_client_to_apim_api" {
+  app_role_id         = random_uuid.apim_app_role.result
+  principal_object_id = azuread_service_principal.serving_client.object_id
   resource_object_id  = azuread_service_principal.apim_api.object_id
 }
 
@@ -173,9 +196,36 @@ resource "azurerm_api_management_api_operation" "chat_completions" {
   }
 }
 
-resource "azurerm_api_management_api_policy" "openai_proxy" {
+resource "azurerm_api_management_api_operation" "chat_completions_sp" {
+  operation_id        = "chat-completions-sp"
   api_name            = azurerm_api_management_api.openai_proxy.name
   api_management_name = azurerm_api_management.this.name
+  resource_group_name = azurerm_resource_group.this.name
+  display_name        = "Chat Completions Service Principal"
+  method              = "POST"
+  url_template        = "/sp/chat/completions"
+  description         = "Proxy a chat completions request to Azure OpenAI using a service-principal-authenticated Model Serving caller."
+
+  request {
+    description = "OpenAI-compatible chat completions payload."
+    representation {
+      content_type = "application/json"
+    }
+  }
+
+  response {
+    status_code = 200
+    description = "Successful response from Azure OpenAI."
+    representation {
+      content_type = "application/json"
+    }
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "openai_proxy_mi" {
+  api_name            = azurerm_api_management_api.openai_proxy.name
+  api_management_name = azurerm_api_management.this.name
+  operation_id        = azurerm_api_management_api_operation.chat_completions.operation_id
   resource_group_name = azurerm_resource_group.this.name
 
   xml_content = <<-XML
@@ -218,5 +268,57 @@ resource "azurerm_api_management_api_policy" "openai_proxy" {
   depends_on = [
     azurerm_role_assignment.apim_openai_user,
     azuread_app_role_assignment.databricks_access_connector_to_apim_api,
+  ]
+}
+
+resource "azurerm_api_management_api_operation_policy" "openai_proxy_sp" {
+  api_name            = azurerm_api_management_api.openai_proxy.name
+  api_management_name = azurerm_api_management.this.name
+  operation_id        = azurerm_api_management_api_operation.chat_completions_sp.operation_id
+  resource_group_name = azurerm_resource_group.this.name
+
+  xml_content = <<-XML
+    <policies>
+      <inbound>
+        <base />
+        <validate-jwt header-name="Authorization" require-scheme="Bearer" failed-validation-httpcode="401" failed-validation-error-message="Missing or invalid bearer token.">
+          <openid-config url="${local.jwt_openid_config_url}" />
+          <audiences>
+            <audience>${local.apim_sp_jwt_audience}</audience>
+          </audiences>
+          <issuers>
+            <issuer>${local.jwt_v2_issuer}</issuer>
+          </issuers>
+          <required-claims>
+            <claim name="roles" match="any">
+              <value>APIM.Proxy.Invoke</value>
+            </claim>
+            <claim name="azp" match="any">
+              <value>${azuread_application.serving_client.client_id}</value>
+            </claim>
+          </required-claims>
+        </validate-jwt>
+        <set-backend-service base-url="${local.openai_backend_base_url}" />
+        <rewrite-uri template="/openai/deployments/${var.openai_model_deployment_name}/chat/completions?api-version=${var.openai_api_version}" copy-unmatched-params="false" />
+        <authentication-managed-identity resource="${local.openai_resource_audience}" />
+        <set-header name="Content-Type" exists-action="override">
+          <value>application/json</value>
+        </set-header>
+      </inbound>
+      <backend>
+        <base />
+      </backend>
+      <outbound>
+        <base />
+      </outbound>
+      <on-error>
+        <base />
+      </on-error>
+    </policies>
+  XML
+
+  depends_on = [
+    azurerm_role_assignment.apim_openai_user,
+    azuread_app_role_assignment.serving_client_to_apim_api,
   ]
 }

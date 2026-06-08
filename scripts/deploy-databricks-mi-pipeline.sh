@@ -101,17 +101,20 @@ CURRENT_USER="$(dbx_api_json GET /api/2.0/preview/scim/v2/Me | jq -r '.userName'
 NOTEBOOK_PATH="/Users/${CURRENT_USER}/${NOTEBOOK_NAME}"
 
 echo "Ensuring Unity Catalog service credential '${SERVICE_CREDENTIAL_NAME}'..."
-if ! dbx_api_json GET "/api/2.1/unity-catalog/credentials/${SERVICE_CREDENTIAL_NAME}" >/dev/null 2>&1; then
-  dbx_api_json POST /api/2.1/unity-catalog/credentials "$(jq -n \
-    --arg name "${SERVICE_CREDENTIAL_NAME}" \
-    --arg access_connector_id "${ACCESS_CONNECTOR_ID}" \
-    '{
-      name: $name,
-      purpose: "SERVICE",
-      azure_managed_identity: {access_connector_id: $access_connector_id},
-      comment: "POC APIM/OpenAI authentication test from Databricks",
-      skip_validation: true
-    }')" >/dev/null
+SERVICE_CREDENTIAL_BODY="$(jq -n \
+  --arg name "${SERVICE_CREDENTIAL_NAME}" \
+  --arg access_connector_id "${ACCESS_CONNECTOR_ID}" \
+  '{
+    name: $name,
+    purpose: "SERVICE",
+    azure_managed_identity: {access_connector_id: $access_connector_id},
+    comment: "POC APIM/OpenAI authentication test from Databricks",
+    skip_validation: true
+  }')"
+if dbx_api_json GET "/api/2.1/unity-catalog/credentials/${SERVICE_CREDENTIAL_NAME}" >/dev/null 2>&1; then
+  dbx_api_json PATCH "/api/2.1/unity-catalog/credentials/${SERVICE_CREDENTIAL_NAME}" "${SERVICE_CREDENTIAL_BODY}" >/dev/null
+else
+  dbx_api_json POST /api/2.1/unity-catalog/credentials "${SERVICE_CREDENTIAL_BODY}" >/dev/null
 fi
 
 NOTEBOOK_SOURCE="$(cat <<'PY'

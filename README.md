@@ -276,6 +276,69 @@ Résultat :
 
 Ce résultat confirme que le token est bien émis pour l'audience attendue, que l'`oid` correspond à la managed identity de l'Access Connector Databricks, qu'APIM accepte le token, et qu'Azure OpenAI répond via la managed identity APIM.
 
+## Test Model Serving endpoint
+
+Une variante a été ajoutée pour tester explicitement le scénario suivant :
+
+```text
+Client
+  -> Databricks Model Serving endpoint
+    -> code Python du modèle MLflow pyfunc
+      -> Unity Catalog service credential / Access Connector managed identity
+      -> APIM
+      -> Azure OpenAI
+```
+
+Le script [scripts/deploy-databricks-serving-mi-test.sh](scripts/deploy-databricks-serving-mi-test.sh) automatise ce test :
+
+- création ou mise à jour de la service credential Unity Catalog `apim_openai_mi`
+- enregistrement d'un modèle MLflow `pyfunc` dans Unity Catalog
+- création ou mise à jour d'un endpoint Databricks Model Serving
+- invocation de l'endpoint avec un payload minimal
+- tentative d'obtention d'un token Entra depuis le code `predict()` du modèle
+- appel APIM uniquement si le token managed identity est obtenu
+
+Le modèle de test ne contient pas de fallback par clé Azure OpenAI, bearer token statique, secret client, PAT ou autre mécanisme d'authentification. Si la managed identity n'est pas disponible depuis le runtime Model Serving, le test échoue volontairement.
+
+Résultat observé :
+
+```text
+Databricks API POST /serving-endpoints/apim-mi-serving-probe/invocations failed with HTTP 400.
+Encountered an unexpected error while evaluating the model.
+```
+
+Erreur retournée par le code du modèle :
+
+```text
+ModuleNotFoundError("No module named 'databricks.service_credentials'")
+NameError("name 'dbutils' is not defined")
+```
+
+Interprétation :
+
+- Le serving endpoint est bien créé.
+- Le modèle MLflow `pyfunc` est bien chargé.
+- L'exécution arrive bien dans la méthode `predict()`.
+- L'appel APIM n'est jamais tenté, car le runtime Model Serving ne permet pas d'obtenir la Unity Catalog service credential.
+- L'API notebook `dbutils.credentials.getServiceCredentialsProvider(...)` n'est pas disponible dans le runtime Model Serving.
+- L'API `databricks.service_credentials.getServiceCredentialsProvider(...)`, documentée pour certains contextes UDF, n'est pas disponible dans ce runtime Model Serving.
+
+Conclusion de la POC :
+
+```text
+Databricks Job/Notebook serverless -> UC service credential -> Access Connector MI -> APIM -> Azure OpenAI
+```
+
+est validé.
+
+```text
+Databricks Model Serving endpoint -> UC service credential -> Access Connector MI -> APIM -> Azure OpenAI
+```
+
+n'est pas validé avec le runtime Model Serving testé. Le blocage se situe dans le conteneur Model Serving, au moment où le code du modèle essaie d'obtenir une credential managed identity. Ce n'est pas un problème APIM ni Azure OpenAI : le test notebook confirme que la même service credential, le même Access Connector et la même policy APIM fonctionnent correctement hors Model Serving.
+
+Les alternatives qui utilisent une clé API, un bearer token statique, un service principal avec secret client, ou un secret Databricks ne répondent pas à l'objectif de cette POC, qui est de valider un flux sans secret applicatif.
+
 ## Point technique important
 
 La première variante utilisait une audience applicative `api://...` avec un app role `APIM.Proxy.Invoke`. Le provider Databricks `dbutils.credentials.getServiceCredentialsProvider(...)` n'accepte pas cette audience comme URI de ressource pour l'émission du token. La policy APIM a donc été adaptée pour valider une audience Azure valide, `https://cognitiveservices.azure.com`, puis restreindre l'accès par claim `oid`.
